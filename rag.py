@@ -93,7 +93,7 @@ if __name__ == "__main__":
 
         print("\nSources:")
         for i, source in enumerate(result["sources"]):
-            print("\n" + "-" * 80)
-            print(f"Source {i+1}: {source['source']} | Chunk {source['chunk_index']}")
-            print("-" * 80)
-            print(source["text"][:700])
+            preview = source["text"][:300].replace("\n", " ")
+
+            print(f"\n{i+1}. {source['source']} | Chunk {source['chunk_index']}")
+            print(f'   Preview: "{preview}..."')
