@@ -4,14 +4,16 @@ from anthropic import Anthropic
 
 load_dotenv()
 
+MODEL_NAME = "claude-haiku-4-5-20251001"
+
 client = Anthropic(
     api_key=os.getenv("ANTHROPIC_API_KEY")
 )
 
-def ask_llm(prompt):
+def ask_llm(prompt, max_tokens=700):
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=500,
+        model=MODEL_NAME,
+        max_tokens=max_tokens,
         messages=[
             {
                 "role": "user",
