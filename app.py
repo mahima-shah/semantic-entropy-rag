@@ -1,4 +1,7 @@
 import streamlit as st
+import csv
+import os
+from datetime import datetime
 
 from rag import answer_question
 from multi_answer import generate_multiple_answers
@@ -16,8 +19,13 @@ st.title("RAG Reliability Checker")
 st.write("Ask a question and see the answer, sources, confidence score, and nudged response.")
 
 question = st.text_input("Ask a question")
+category = st.selectbox(
+    "Question category",
+    ["Uncategorized", "Easy", "Ambiguous", "Impossible"]
+)
 
 run_button = st.button("Run")
+
 
 def confidence_reason(confidence):
     if confidence == "High":
@@ -27,6 +35,7 @@ def confidence_reason(confidence):
     else:
         return "Multiple generated answers disagreed, so the answer may be unreliable."
 
+
 def confidence_badge(confidence):
     if confidence == "High":
         st.success("Confidence: High")
@@ -34,6 +43,46 @@ def confidence_badge(confidence):
         st.warning("Confidence: Medium")
     else:
         st.error("Confidence: Low")
+
+
+def save_result(question, category, confidence, reason, nudged_used, answer, sources):
+    os.makedirs("results", exist_ok=True)
+
+    filename = "results/evaluation_results.csv"
+    file_exists = os.path.exists(filename)
+
+    source_names = ", ".join(
+        [f"{s['source']} (Chunk {s['chunk_index']})" for s in sources]
+    )
+
+    with open(filename, "a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+
+        if not file_exists:
+            writer.writerow([
+                "Timestamp",
+                "Question",
+                "Category",
+                "Confidence",
+                "Reason",
+                "Nudged Used",
+                "Answer",
+                "Source Count",
+                "Sources"
+            ])
+
+        writer.writerow([
+            datetime.now().isoformat(timespec="seconds"),
+            question,
+            category,
+            confidence,
+            reason,
+            nudged_used,
+            answer.replace("\n", " "),
+            len(sources),
+            source_names
+        ])
+
 
 if run_button and question:
     with st.spinner("Running RAG pipeline..."):
@@ -48,11 +97,13 @@ if run_button and question:
         comparisons = compare_all_answers(answers)
         confidence = confidence_label(comparisons)
 
+    reason = confidence_reason(confidence)
+
     st.subheader("Confidence")
     confidence_badge(confidence)
 
     st.write("**Reason:**")
-    st.write(confidence_reason(confidence))
+    st.write(reason)
 
     st.subheader("Sources")
     for i, source in enumerate(rag_result["sources"]):
@@ -62,8 +113,9 @@ if run_button and question:
             st.write(snippet + "...")
 
     nudged_answer = None
+    nudged_used = confidence == "Low"
 
-    if confidence == "Low":
+    if nudged_used:
         with st.spinner("Low confidence detected. Applying nudged prompt..."):
             nudged_answer = generate_nudged_answer(question, rag_result["sources"])
 
@@ -73,6 +125,18 @@ if run_button and question:
         with st.expander("Nudged Answer Preview"):
             nudged_answer = generate_nudged_answer(question, rag_result["sources"])
             st.write(nudged_answer)
+
+    save_result(
+        question=question,
+        category=category,
+        confidence=confidence,
+        reason=reason,
+        nudged_used=nudged_used,
+        answer=rag_result["answer"],
+        sources=rag_result["sources"]
+    )
+
+    st.success("Result saved to results/evaluation_results.csv")
 
     st.subheader("Debug Details")
 
