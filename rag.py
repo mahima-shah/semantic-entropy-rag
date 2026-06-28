@@ -1,5 +1,8 @@
 print("Importing sentence-transformers...")
 
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from sentence_transformers import SentenceTransformer
 import chromadb
 from llm import ask_llm
@@ -68,9 +71,17 @@ Answer:
 
 
 def answer_question(question):
+    print("Retrieving chunks...")
     chunks = retrieve_chunks(question)
+    print("Chunks retrieved.")
+
+    print("Building prompt...")
     prompt = build_prompt(question, chunks)
+    print("Prompt built.")
+
+    print("Calling Claude...")
     answer = ask_llm(prompt)
+    print("Claude responded.")
 
     return {
         "question": question,

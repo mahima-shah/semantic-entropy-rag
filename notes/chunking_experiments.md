@@ -26,4 +26,5 @@ Use:
 chunk_size = 1000  
 overlap = 150
 
-Reason: legal and policy documents need surrounding context. Smaller chunks may retrieve only half a clause.
+Reason: legal and policy documents need surrounding context
+Smaller chunks may retrieve only half a clause.
