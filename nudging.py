@@ -1,20 +1,71 @@
-from rag import retrieve_chunks
-from llm import ask_llm
+"""
+nudging.py
+
+Implements prompt-based nudging for low-confidence RAG answers.
+
+When the confidence layer detects uncertainty, this module builds a
+stricter prompt that tells the LLM to avoid guessing, use only retrieved
+context, and explicitly mention missing or ambiguous information.
+"""
+
+from typing import Any
+
 from entropy import compare_all_answers, confidence_label
+from llm import ask_llm
+from rag import build_prompt, retrieve_chunks
 
 
-def format_chunks_for_context(chunks):
-    context = ""
+# -----------------------------
+# Context Formatting
+# -----------------------------
+
+def format_chunks_for_context(chunks: list[dict[str, Any]]) -> str:
+    """
+    Format retrieved chunks into a source-labeled context block.
+
+    Args:
+        chunks:
+            Retrieved chunks from the RAG pipeline.
+
+    Returns:
+        A formatted context string with source labels.
+    """
+
+    context_parts = []
 
     for i, chunk in enumerate(chunks):
-        context += f"\n[Source {i+1}: {chunk['source']} | Chunk {chunk['chunk_index']}]\n"
-        context += chunk["text"]
-        context += "\n"
+        source_header = (
+            f"[Source {i + 1}: "
+            f"{chunk['source']} | Chunk {chunk['chunk_index']}]"
+        )
 
-    return context
+        context_parts.append(f"{source_header}\n{chunk['text']}")
+
+    return "\n\n".join(context_parts)
 
 
-def build_nudged_prompt(question, chunks):
+# -----------------------------
+# Nudged Prompt Construction
+# -----------------------------
+
+def build_nudged_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
+    """
+    Build a stricter prompt for safer answer generation.
+
+    The nudged prompt is designed to reduce hallucination by explicitly
+    telling the model not to infer missing facts or use outside knowledge.
+
+    Args:
+        question:
+            User question.
+
+        chunks:
+            Retrieved document chunks.
+
+    Returns:
+        A stricter prompt for the LLM.
+    """
+
     context = format_chunks_for_context(chunks)
 
     return f"""
@@ -40,12 +91,48 @@ Answer:
 """
 
 
-def generate_nudged_answer(question, chunks):
+# -----------------------------
+# Nudged Answer Generation
+# -----------------------------
+
+def generate_nudged_answer(
+    question: str,
+    chunks: list[dict[str, Any]]
+) -> str:
+    """
+    Generate an answer using the stricter nudged prompt.
+
+    Args:
+        question:
+            User question.
+
+        chunks:
+            Retrieved document chunks.
+
+    Returns:
+        Nudged LLM answer.
+    """
+
     prompt = build_nudged_prompt(question, chunks)
     return ask_llm(prompt)
 
 
-def confidence_from_answers(answers):
+# -----------------------------
+# Confidence Helper
+# -----------------------------
+
+def confidence_from_answers(answers: list[str]) -> dict[str, Any]:
+    """
+    Compute confidence from multiple generated answers.
+
+    Args:
+        answers:
+            Multiple generated answers for the same question.
+
+    Returns:
+        Dictionary containing pairwise comparisons and confidence label.
+    """
+
     comparisons = compare_all_answers(answers)
     confidence = confidence_label(comparisons)
 
@@ -55,50 +142,56 @@ def confidence_from_answers(answers):
     }
 
 
+# -----------------------------
+# Command-Line Test
+# -----------------------------
+
 if __name__ == "__main__":
+
     question = input("\nAsk a question to nudge: ")
 
     chunks = retrieve_chunks(question)
-
     original_answers = []
 
     print("\nGenerating original answers...")
-    for i in range(3):
-        from rag import build_prompt
+
+    for _ in range(3):
         original_prompt = build_prompt(question, chunks)
         original_answer = ask_llm(original_prompt)
         original_answers.append(original_answer)
 
-    original_confidence_data = confidence_from_answers(original_answers)
+    confidence_data = confidence_from_answers(original_answers)
 
     print("\nOriginal Answers:")
+
     for i, answer in enumerate(original_answers):
         print("\n" + "=" * 80)
-        print(f"Original Answer {i+1}")
+        print(f"Original Answer {i + 1}")
         print("=" * 80)
         print(answer)
 
     print("\nOriginal Comparisons:")
-    for item in original_confidence_data["comparisons"]:
-        print(f"{item['pair']}: {item['result']}")
+
+    for comparison in confidence_data["comparisons"]:
+        print(f"{comparison['pair']}: {comparison['result']}")
 
     print("\nOriginal Confidence:")
-    print(original_confidence_data["confidence"])
+    print(confidence_data["confidence"])
 
-    nudged_answer = None
-
-    if original_confidence_data["confidence"] == "Low":
+    if confidence_data["confidence"] == "Low":
         print("\nLow confidence detected. Applying nudged prompt...")
-        nudged_answer = generate_nudged_answer(question, chunks)
     else:
-        print("\nConfidence is not Low. Nudging not required.")
-        nudged_answer = generate_nudged_answer(question, chunks)
+        print("\nConfidence is not Low. Showing nudged preview for comparison...")
+
+    nudged_answer = generate_nudged_answer(question, chunks)
 
     print("\nNudged Answer:")
     print(nudged_answer)
 
     print("\nSources:")
+
     for i, chunk in enumerate(chunks):
         preview = chunk["text"][:300].replace("\n", " ")
-        print(f"\n{i+1}. {chunk['source']} | Chunk {chunk['chunk_index']}")
+
+        print(f"\n{i + 1}. {chunk['source']} | Chunk {chunk['chunk_index']}")
         print(f'   Preview: "{preview}..."')
