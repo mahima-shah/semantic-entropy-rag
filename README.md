@@ -160,3 +160,16 @@ Results showed that the confidence layer generally reflected answer uncertainty 
 # Acknowledgements
 
 This project was developed as part of an AI internship to explore techniques for improving the trustworthiness of Retrieval-Augmented Generation systems.
+
+## What This Project Is Not
+
+This project is a lightweight prototype inspired by research on semantic entropy for uncertainty estimation in language models.
+
+It does **not** implement the original semantic entropy algorithm described in the research literature. Instead, it uses a practical approximation based on:
+
+- Multiple answer generation
+- Pairwise semantic comparison using an LLM
+- Heuristic confidence scoring
+- Prompt-based nudging for low-confidence responses
+
+The evaluation is performed on a relatively small document collection and is intended to demonstrate the concept rather than provide production-grade confidence calibration.
