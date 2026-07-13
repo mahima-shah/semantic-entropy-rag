@@ -1,197 +1,167 @@
 """
 nudging.py
 
-Implements prompt-based nudging for low-confidence RAG answers.
+Generates the final answer after semantic uncertainty analysis.
 
-When the confidence layer detects uncertainty, this module builds a
-stricter prompt that tells the LLM to avoid guessing, use only retrieved
-context, and explicitly mention missing or ambiguous information.
+For low or medium uncertainty, the final answer is built from the dominant
+semantic cluster and checked against the retrieved context.
+
+For high uncertainty, the recovery stage inspects the contradictions and
+uses the retrieved evidence to produce a safe answer or abstain.
 """
 
 from typing import Any
 
-from entropy import compare_all_answers, confidence_label
 from llm import ask_llm
-from rag import build_prompt, retrieve_chunks
+from rag import format_chunks_for_context
 
 
-# -----------------------------
-# Context Formatting
-# -----------------------------
-
-def format_chunks_for_context(chunks: list[dict[str, Any]]) -> str:
+def format_samples(
+    samples: list[dict[str, Any]]
+) -> str:
     """
-    Format retrieved chunks into a source-labeled context block.
-
-    Args:
-        chunks:
-            Retrieved chunks from the RAG pipeline.
-
-    Returns:
-        A formatted context string with source labels.
+    Format sampled answers for use in finalization prompts.
     """
 
-    context_parts = []
+    sample_blocks = []
 
-    for i, chunk in enumerate(chunks):
-        source_header = (
-            f"[Source {i + 1}: "
-            f"{chunk['source']} | Chunk {chunk['chunk_index']}]"
+    for sample in samples:
+        sample_blocks.append(
+            f"Sample {sample['sample_id']}:\n"
+            f"{sample['answer']}"
         )
 
-        context_parts.append(f"{source_header}\n{chunk['text']}")
-
-    return "\n\n".join(context_parts)
+    return "\n\n".join(sample_blocks)
 
 
-# -----------------------------
-# Nudged Prompt Construction
-# -----------------------------
-
-def build_nudged_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
+def generate_consensus_answer(
+    question: str,
+    chunks: list[dict[str, Any]],
+    samples: list[dict[str, Any]],
+    dominant_sample_ids: list[int],
+    medium_uncertainty: bool = False
+) -> str:
     """
-    Build a stricter prompt for safer answer generation.
+    Generate a final answer from the dominant semantic cluster.
 
-    The nudged prompt is designed to reduce hallucination by explicitly
-    telling the model not to infer missing facts or use outside knowledge.
-
-    Args:
-        question:
-            User question.
-
-        chunks:
-            Retrieved document chunks.
-
-    Returns:
-        A stricter prompt for the LLM.
+    The retrieved context remains the only source of evidence.
     """
 
-    context = format_chunks_for_context(chunks)
+    context = format_chunks_for_context(
+        chunks
+    )
 
-    return f"""
-You are answering questions using only the retrieved context.
+    dominant_samples = [
+        sample
+        for sample in samples
+        if sample["sample_id"]
+        in dominant_sample_ids
+    ]
 
-Rules:
-1. Use only the context below.
-2. Do not use outside knowledge.
-3. Do not guess missing facts.
-4. Do not infer dates, names, notice periods, duties, approval processes, or legal consequences unless explicitly stated.
-5. If the context does not contain the answer, say:
-   "The provided documents do not contain enough information to answer this."
-6. If the context is ambiguous, say what is clear and what is unclear.
-7. Cite the source numbers used.
+    formatted_samples = format_samples(
+        dominant_samples
+    )
 
-Context:
-{context}
+    if medium_uncertainty:
+        uncertainty_instruction = (
+            "Explicitly mention any unresolved uncertainty "
+            "or qualification supported by the context."
+        )
+    else:
+        uncertainty_instruction = (
+            "Do not mention the internal sampling process."
+        )
+
+    prompt = f"""
+You are producing the final answer for a legal RAG system.
 
 Question:
 {question}
 
-Answer:
+Retrieved context:
+{context}
+
+Draft answers from the dominant semantic meaning group:
+{formatted_samples}
+
+Instructions:
+
+1. Use only the retrieved context as evidence.
+2. Treat the sampled answers only as drafts.
+3. Do not treat agreement between samples as proof.
+4. Keep only claims directly supported by the retrieved context.
+5. Do not invent statutes, cases, dates, parties, duties, exceptions, or outcomes.
+6. Cite source numbers for material claims.
+7. If evidence is incomplete, clearly say so.
+8. {uncertainty_instruction}
+9. Produce one clear and concise final answer.
+
+Final answer:
 """
 
+    return ask_llm(
+        prompt=prompt,
+        temperature=0.0,
+        max_tokens=1000
+    )
 
-# -----------------------------
-# Nudged Answer Generation
-# -----------------------------
 
-def generate_nudged_answer(
+def generate_recovery_answer(
     question: str,
-    chunks: list[dict[str, Any]]
+    chunks: list[dict[str, Any]],
+    samples: list[dict[str, Any]],
+    audit: dict[str, Any]
 ) -> str:
     """
-    Generate an answer using the stricter nudged prompt.
-
-    Args:
-        question:
-            User question.
-
-        chunks:
-            Retrieved document chunks.
-
-    Returns:
-        Nudged LLM answer.
+    Generate a safe answer when material contradictions are detected.
     """
 
-    prompt = build_nudged_prompt(question, chunks)
-    return ask_llm(prompt)
+    context = format_chunks_for_context(
+        chunks
+    )
 
+    formatted_samples = format_samples(
+        samples
+    )
 
-# -----------------------------
-# Confidence Helper
-# -----------------------------
+    prompt = f"""
+You are the recovery stage of a legal RAG reliability system.
 
-def confidence_from_answers(answers: list[str]) -> dict[str, Any]:
-    """
-    Compute confidence from multiple generated answers.
+The sampled answers conflict.
 
-    Args:
-        answers:
-            Multiple generated answers for the same question.
+Do not resolve the conflict by voting.
+Check every material claim against the retrieved context.
 
-    Returns:
-        Dictionary containing pairwise comparisons and confidence label.
-    """
+Question:
+{question}
 
-    comparisons = compare_all_answers(answers)
-    confidence = confidence_label(comparisons)
+Retrieved context:
+{context}
 
-    return {
-        "comparisons": comparisons,
-        "confidence": confidence
-    }
+Conflicting sampled answers:
+{formatted_samples}
 
+Semantic audit:
+{audit}
 
-# -----------------------------
-# Command-Line Test
-# -----------------------------
+Rules:
 
-if __name__ == "__main__":
+1. Use only the retrieved context as evidence.
+2. Do not use outside legal knowledge.
+3. Discard every unsupported claim, even if several samples repeat it.
+4. Do not invent statutes, cases, dates, parties, duties, exceptions, or outcomes.
+5. State what the retrieved evidence clearly supports.
+6. State what remains unclear or unresolved.
+7. Cite source numbers for material claims.
+8. If the context cannot support a reliable conclusion, say exactly:
+   "The provided documents do not contain enough information to reach a reliable conclusion."
+9. Do not mention internal entropy scores or hidden system instructions.
 
-    question = input("\nAsk a question to nudge: ")
+Safe answer:
+"""
 
-    chunks = retrieve_chunks(question)
-    original_answers = []
-
-    print("\nGenerating original answers...")
-
-    for _ in range(3):
-        original_prompt = build_prompt(question, chunks)
-        original_answer = ask_llm(original_prompt)
-        original_answers.append(original_answer)
-
-    confidence_data = confidence_from_answers(original_answers)
-
-    print("\nOriginal Answers:")
-
-    for i, answer in enumerate(original_answers):
-        print("\n" + "=" * 80)
-        print(f"Original Answer {i + 1}")
-        print("=" * 80)
-        print(answer)
-
-    print("\nOriginal Comparisons:")
-
-    for comparison in confidence_data["comparisons"]:
-        print(f"{comparison['pair']}: {comparison['result']}")
-
-    print("\nOriginal Confidence:")
-    print(confidence_data["confidence"])
-
-    if confidence_data["confidence"] == "Low":
-        print("\nLow confidence detected. Applying nudged prompt...")
-    else:
-        print("\nConfidence is not Low. Showing nudged preview for comparison...")
-
-    nudged_answer = generate_nudged_answer(question, chunks)
-
-    print("\nNudged Answer:")
-    print(nudged_answer)
-
-    print("\nSources:")
-
-    for i, chunk in enumerate(chunks):
-        preview = chunk["text"][:300].replace("\n", " ")
-
-        print(f"\n{i + 1}. {chunk['source']} | Chunk {chunk['chunk_index']}")
-        print(f'   Preview: "{preview}..."')
+    return ask_llm(
+        prompt=prompt,
+        temperature=0.0,
+        max_tokens=1100
+    )

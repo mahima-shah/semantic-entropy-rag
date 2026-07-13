@@ -42,7 +42,7 @@ print("Embedding model loaded.")
 # Retrieval
 # -----------------------------
 
-def retrieve_chunks(query: str, top_k: int = 3) -> list[dict[str, Any]]:
+def retrieve_chunks(query: str, top_k: int = 4) -> list[dict[str, Any]]:
     """
     Retrieve the most relevant document chunks for a user question.
 
@@ -80,27 +80,11 @@ def retrieve_chunks(query: str, top_k: int = 3) -> list[dict[str, Any]]:
 
     return chunks
 
-
-# -----------------------------
-# Prompt Construction
-# -----------------------------
-
-def build_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
+def format_chunks_for_context(
+    chunks: list[dict[str, Any]]
+) -> str:
     """
-    Build the RAG prompt using retrieved context.
-
-    The prompt explicitly instructs the model to answer only from
-    the retrieved chunks and to avoid unsupported guesses.
-
-    Args:
-        question:
-            User question.
-
-        chunks:
-            Retrieved document chunks.
-
-    Returns:
-        Prompt string to send to the LLM.
+    Format retrieved chunks into a source-labeled context block.
     """
 
     context_parts = []
@@ -108,24 +92,51 @@ def build_prompt(question: str, chunks: list[dict[str, Any]]) -> str:
     for i, chunk in enumerate(chunks):
         source_header = (
             f"[Source {i + 1}: "
-            f"{chunk['source']} | Chunk {chunk['chunk_index']}]"
+            f"{chunk['source']} | "
+            f"Chunk {chunk['chunk_index']}]"
         )
 
-        context_parts.append(f"{source_header}\n{chunk['text']}")
+        context_parts.append(
+            f"{source_header}\n"
+            f"{chunk['text']}"
+        )
 
-    context = "\n\n".join(context_parts)
+    return "\n\n".join(
+        context_parts
+    )
+# -----------------------------
+# Prompt Construction
+# -----------------------------
+
+def build_prompt(
+    question: str,
+    chunks: list[dict[str, Any]]
+) -> str:
+    """
+    Build the evidence-grounded prompt shared by all sampled answers.
+    """
+
+    context = format_chunks_for_context(
+        chunks
+    )
 
     return f"""
-You are answering questions using only the provided context.
+You are a legal-document question-answering assistant.
+
+Use only the retrieved context below.
 
 Rules:
-- Use only the context below.
-- If the answer is not in the context, say: "The context does not provide enough information."
-- Do not guess.
-- Do not use outside knowledge.
-- Keep the answer clear and concise.
 
-Context:
+1. Do not use outside knowledge.
+2. Do not invent statutes, cases, dates, parties, duties, exceptions, or outcomes.
+3. Distinguish what the document expressly states from interpretation.
+4. If the answer is missing, say:
+   "The provided documents do not contain enough information to answer this."
+5. If the context is ambiguous, explain what is clear and what remains unclear.
+6. Cite source numbers for material claims.
+7. Keep the answer focused on the question.
+
+Retrieved context:
 {context}
 
 Question:
@@ -134,26 +145,44 @@ Question:
 Answer:
 """
 
+def generate_final_answer(
+    question: str,
+    chunks: list[dict[str, Any]]
+) -> str:
+    """
+    Generate the stable answer shown to the user.
+
+    The final answer uses temperature 0.0 because it is not part of
+    uncertainty sampling.
+    """
+
+    prompt = build_prompt(
+        question,
+        chunks
+    )
+
+    return ask_llm(
+        prompt=prompt,
+        temperature=0.0
+    )
 
 # -----------------------------
 # End-to-End RAG
 # -----------------------------
 
-def answer_question(question: str) -> dict[str, Any]:
+def answer_question(
+    question: str
+) -> dict[str, Any]:
     """
-    Run the full RAG pipeline for a single question.
-
-    Args:
-        question:
-            User question.
-
-    Returns:
-        Dictionary containing the question, answer, and retrieved sources.
+    Retrieve evidence once and generate a stable answer.
     """
 
     chunks = retrieve_chunks(question)
-    prompt = build_prompt(question, chunks)
-    answer = ask_llm(prompt)
+
+    answer = generate_final_answer(
+        question,
+        chunks
+    )
 
     return {
         "question": question,

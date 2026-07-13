@@ -2,9 +2,6 @@
 llm.py
 
 Utility functions for interacting with the Anthropic Claude API.
-
-This module loads the API key from the environment and provides a
-simple wrapper function for sending prompts to the language model.
 """
 
 import os
@@ -13,36 +10,41 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 
-# Load environment variables from the .env file
 load_dotenv()
 
+api_key = os.getenv(
+    "ANTHROPIC_API_KEY"
+)
 
-# Initialize the Anthropic client
+model_name = os.getenv(
+    "ANTHROPIC_MODEL",
+    "claude-haiku-4-5-20251001"
+)
+
+if not api_key:
+    raise ValueError(
+        "ANTHROPIC_API_KEY is missing. "
+        "Add it to your .env file."
+    )
+
 client = Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY")
+    api_key=api_key
 )
 
 
-def ask_llm(prompt: str, max_tokens: int = 700) -> str:
+def ask_llm(
+    prompt: str,
+    max_tokens: int = 900,
+    temperature: float = 0.0
+) -> str:
     """
-    Sends a prompt to the Anthropic Claude model and returns the response.
-
-    Args:
-        prompt (str):
-            The prompt to send to the language model.
-
-        max_tokens (int):
-            Maximum number of tokens to generate.
-            Default is 700.
-
-    Returns:
-        str:
-            The generated response from Claude.
+    Send a prompt to Claude and return generated text.
     """
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=model_name,
         max_tokens=max_tokens,
+        temperature=temperature,
         messages=[
             {
                 "role": "user",
@@ -51,4 +53,23 @@ def ask_llm(prompt: str, max_tokens: int = 700) -> str:
         ]
     )
 
-    return response.content[0].text
+    text_parts = []
+
+    for block in response.content:
+        if getattr(
+            block,
+            "type",
+            None
+        ) == "text":
+            text_parts.append(
+                block.text
+            )
+
+    if not text_parts:
+        raise RuntimeError(
+            "Claude returned no text response."
+        )
+
+    return "\n".join(
+        text_parts
+    ).strip()

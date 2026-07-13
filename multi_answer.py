@@ -1,108 +1,98 @@
 """
 multi_answer.py
 
-Generates multiple independent answers for the same question using
-the same retrieved context.
+Generates multiple answers for the same question using the same retrieved
+context, prompt, model, and temperature.
 
-These multiple responses are later compared to estimate whether the
-language model consistently interprets the retrieved evidence.
+Keeping the temperature fixed means the test measures variation within one
+sampling distribution rather than variation caused by changing settings.
 """
 
 from typing import Any
 
 from llm import ask_llm
-from rag import build_prompt, retrieve_chunks
+from rag import build_prompt
 
 
-# -----------------------------
-# Multiple Answer Generation
-# -----------------------------
+DEFAULT_SAMPLE_COUNT = 5
+DEFAULT_SAMPLE_TEMPERATURE = 0.7
+
 
 def generate_multiple_answers(
     question: str,
-    num_answers: int = 3
-) -> dict[str, Any]:
+    chunks: list[dict[str, Any]],
+    sample_count: int = DEFAULT_SAMPLE_COUNT,
+    temperature: float = DEFAULT_SAMPLE_TEMPERATURE
+) -> list[dict[str, Any]]:
     """
-    Generate multiple answers for the same question.
-
-    Each answer is produced independently while using the exact same
-    retrieved context. The resulting answers are later compared by the
-    semantic entropy layer to estimate confidence.
+    Generate repeated answers using one fixed temperature.
 
     Args:
         question:
-            User question.
+            Original user question.
 
-        num_answers:
-            Number of independent answers to generate.
+        chunks:
+            Retrieved chunks that remain fixed for all samples.
+
+        sample_count:
+            Number of answers to generate.
+
+        temperature:
+            Shared temperature used for every answer.
 
     Returns:
-        Dictionary containing:
-            - question
-            - retrieved chunks
-            - generated answers
+        List containing each generated answer and its metadata.
     """
 
-    # Retrieve supporting document chunks only once.
-    chunks = retrieve_chunks(question)
-
-    answers = []
-
-    for i in range(num_answers):
-
-        prompt = build_prompt(question, chunks)
-
-        prompt += f"""
-
-Generate answer version {i + 1}.
-
-Requirements:
-- Stay grounded in the retrieved context.
-- Do not introduce outside knowledge.
-- Answer naturally and independently.
-"""
-
-        answer = ask_llm(prompt)
-        answers.append(answer)
-
-    return {
-        "question": question,
-        "chunks": chunks,
-        "answers": answers
-    }
-
-
-# -----------------------------
-# Command-Line Entry Point
-# -----------------------------
-
-if __name__ == "__main__":
-
-    while True:
-
-        question = input(
-            "\nAsk a question for multiple answers or type 'exit': "
+    if sample_count < 2:
+        raise ValueError(
+            "sample_count must be at least 2."
         )
 
-        if question.lower() == "exit":
-            break
+    prompt = build_prompt(
+        question,
+        chunks
+    )
 
-        result = generate_multiple_answers(question)
+    samples = []
 
-        print("\nQuestion:")
-        print(result["question"])
+    for index in range(sample_count):
+        answer = ask_llm(
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=900
+        )
 
-        print("\nRetrieved Sources:")
+        samples.append({
+            "sample_id": index + 1,
+            "temperature": temperature,
+            "answer": answer
+        })
 
-        for i, chunk in enumerate(result["chunks"]):
-            print(f"{i + 1}. {chunk['source']} | Chunk {chunk['chunk_index']}")
+    return samples
 
-        print("\nGenerated Answers:")
 
-        for i, answer in enumerate(result["answers"]):
+if __name__ == "__main__":
+    from rag import retrieve_chunks
 
-            print("\n" + "=" * 80)
-            print(f"Answer {i + 1}")
-            print("=" * 80)
+    question = input(
+        "\nAsk a question for semantic consistency testing: "
+    )
 
-            print(answer)
+    chunks = retrieve_chunks(question)
+
+    samples = generate_multiple_answers(
+        question=question,
+        chunks=chunks,
+        sample_count=5,
+        temperature=0.7
+    )
+
+    for sample in samples:
+        print("\n" + "=" * 80)
+        print(
+            f"Sample {sample['sample_id']} "
+            f"(temperature={sample['temperature']})"
+        )
+        print("=" * 80)
+        print(sample["answer"])

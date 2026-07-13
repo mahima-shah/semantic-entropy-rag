@@ -1,126 +1,183 @@
 """
 entropy.py
 
-Implements a lightweight semantic entropy-inspired confidence layer.
+Calculates a frequency-based semantic entropy approximation from the
+semantic meaning clusters produced by semantic_judge.py.
 
-Instead of relying on a single generated answer, the system generates
-multiple answers and compares their meanings. The level of agreement
-between the answers is then used to estimate confidence.
+This is not the full probability-weighted semantic entropy calculation.
+It is a practical prototype using the frequency of sampled meanings.
 """
 
-from compare_answers import compare_meaning
+import math
+from typing import Any
 
 
-# -----------------------------
-# Pairwise Meaning Comparison
-# -----------------------------
-
-def compare_all_answers(answers: list[str]) -> list[dict]:
+def calculate_semantic_entropy(
+    clusters: list[dict[str, Any]],
+    sample_count: int
+) -> dict[str, float]:
     """
-    Compare every pair of generated answers.
-
-    Each pair is evaluated using an LLM that determines whether the
-    two answers communicate the same meaning.
+    Calculate raw and normalized entropy from cluster frequencies.
 
     Args:
-        answers:
-            List of generated answers.
+        clusters:
+            Semantic answer clusters returned by the judge.
+
+        sample_count:
+            Total number of generated answers.
 
     Returns:
-        List of comparison results.
+        Raw entropy and normalized entropy.
     """
 
-    comparisons = []
+    if sample_count < 2:
+        return {
+            "raw_entropy": 0.0,
+            "normalized_entropy": 0.0
+        }
 
-    for i in range(len(answers)):
-        for j in range(i + 1, len(answers)):
-
-            result = compare_meaning(
-                answers[i],
-                answers[j]
-            )
-
-            comparisons.append({
-                "pair": f"A{i + 1} vs A{j + 1}",
-                "result": result
-            })
-
-    return comparisons
-
-
-# -----------------------------
-# Confidence Estimation
-# -----------------------------
-
-# NOTE:
-# This is a lightweight approximation of semantic entropy.
-# Rather than computing probability distributions over semantic
-# clusters as described in the original research, this project
-# estimates confidence using pairwise agreement between multiple
-# independently generated answers.
-
-def confidence_label(comparisons: list[dict]) -> str:
-    """
-    Estimate confidence based on semantic agreement.
-
-    Confidence is determined by counting how many pairwise comparisons
-    disagree in meaning.
-
-    Rules:
-        High:
-            No disagreements.
-
-        Medium:
-            One disagreement.
-
-        Low:
-            Two or more disagreements.
-
-    Args:
-        comparisons:
-            Output from compare_all_answers().
-
-    Returns:
-        Confidence label ("High", "Medium", or "Low").
-    """
-
-    no_count = sum(
-        1
-        for comparison in comparisons
-        if comparison["result"] == "NO"
-    )
-
-    if no_count == 0:
-        return "High"
-
-    elif no_count == 1:
-        return "Medium"
-
-    else:
-        return "Low"
-
-
-# -----------------------------
-# Command-Line Example
-# -----------------------------
-
-if __name__ == "__main__":
-
-    answers = [
-        "Force majeure means events beyond a party's control, such as natural disasters or war.",
-
-        "Force majeure refers to uncontrollable events that excuse non-performance, like floods, earthquakes, or terrorism.",
-
-        "Force majeure means the notice period is 30 days."
+    cluster_sizes = [
+        len(cluster.get("sample_ids", []))
+        for cluster in clusters
+        if cluster.get("sample_ids")
     ]
 
-    comparisons = compare_all_answers(answers)
-    confidence = confidence_label(comparisons)
+    if not cluster_sizes:
+        return {
+            "raw_entropy": 0.0,
+            "normalized_entropy": 0.0
+        }
 
-    print("Comparisons:")
+    raw_entropy = 0.0
 
-    for comparison in comparisons:
-        print(f"{comparison['pair']}: {comparison['result']}")
+    for cluster_size in cluster_sizes:
+        probability = (
+            cluster_size / sample_count
+        )
 
-    print("\nConfidence:")
-    print(confidence)
+        if probability > 0:
+            raw_entropy -= (
+                probability
+                * math.log(probability)
+            )
+
+    maximum_entropy = math.log(
+        sample_count
+    )
+
+    if maximum_entropy == 0:
+        normalized_entropy = 0.0
+    else:
+        normalized_entropy = (
+            raw_entropy / maximum_entropy
+        )
+
+    normalized_entropy = min(
+        max(normalized_entropy, 0.0),
+        1.0
+    )
+
+    return {
+        "raw_entropy": raw_entropy,
+        "normalized_entropy": normalized_entropy
+    }
+
+
+def dominant_cluster(
+    clusters: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """
+    Return the semantic cluster containing the most answers.
+    """
+
+    if not clusters:
+        return None
+
+    return max(
+        clusters,
+        key=lambda cluster: len(
+            cluster.get("sample_ids", [])
+        )
+    )
+
+
+def assess_risk(
+    normalized_entropy: float,
+    audit: dict[str, Any]
+) -> dict[str, str]:
+    """
+    Convert entropy and contradiction signals into a risk route.
+
+    Material legal disagreements override the numeric entropy score.
+    Citation-format differences alone do not trigger recovery.
+    """
+
+    hard_override_reasons = []
+
+    if audit.get("material_contradiction"):
+        hard_override_reasons.append(
+            "Material contradiction detected."
+        )
+
+    if audit.get("jurisdiction_variance"):
+        hard_override_reasons.append(
+            "The answers used different jurisdictions."
+        )
+
+    if audit.get("unsupported_claim_risk"):
+        hard_override_reasons.append(
+            "The answers may contain unsupported factual claims."
+        )
+
+    if (
+        hard_override_reasons
+        or normalized_entropy > 0.50
+    ):
+        reason = " ".join(
+            hard_override_reasons
+        )
+
+        if not reason:
+            reason = (
+                "The answers were distributed across "
+                "multiple semantic meanings."
+            )
+
+        return {
+            "label": "High",
+            "route": "recover",
+            "reason": reason
+        }
+
+    if normalized_entropy > 0.20:
+        reason = (
+            "Most answers agreed, but some semantic "
+            "variation remained."
+        )
+
+        if audit.get("citation_variance"):
+            reason += (
+                " Citation references also varied."
+            )
+
+        return {
+            "label": "Medium",
+            "route": "qualify",
+            "reason": reason
+        }
+
+    if audit.get("citation_variance"):
+        reason = (
+            "The sampled answers were stable in meaning, "
+            "but their citation labels or formatting varied."
+        )
+    else:
+        reason = (
+            "The sampled answers were stable in meaning."
+        )
+
+    return {
+        "label": "Low",
+        "route": "proceed",
+        "reason": reason
+    }
