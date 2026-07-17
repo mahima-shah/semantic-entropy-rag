@@ -1,11 +1,15 @@
 """
 multi_answer.py
 
-Generates multiple answers for the same question using the same retrieved
-context, prompt, model, and temperature.
+Supports two different reliability experiments:
 
-Keeping the temperature fixed means the test measures variation within one
-sampling distribution rather than variation caused by changing settings.
+1. Fixed-temperature sampling:
+   Repeats the same question at one temperature to estimate semantic
+   uncertainty.
+
+2. Temperature sweep:
+   Generates answers at different temperatures to measure how sensitive
+   the answer is to generation settings.
 """
 
 from typing import Any
@@ -16,32 +20,24 @@ from rag import build_prompt
 
 DEFAULT_SAMPLE_COUNT = 5
 DEFAULT_SAMPLE_TEMPERATURE = 0.7
+DEFAULT_TEMPERATURE_SWEEP = [
+    0.0,
+    0.3,
+    0.6,
+    0.9
+]
 
 
-def generate_multiple_answers(
+def generate_fixed_temperature_answers(
     question: str,
     chunks: list[dict[str, Any]],
     sample_count: int = DEFAULT_SAMPLE_COUNT,
     temperature: float = DEFAULT_SAMPLE_TEMPERATURE
 ) -> list[dict[str, Any]]:
     """
-    Generate repeated answers using one fixed temperature.
+    Generate multiple answers using the same temperature.
 
-    Args:
-        question:
-            Original user question.
-
-        chunks:
-            Retrieved chunks that remain fixed for all samples.
-
-        sample_count:
-            Number of answers to generate.
-
-        temperature:
-            Shared temperature used for every answer.
-
-    Returns:
-        List containing each generated answer and its metadata.
+    This is the sampling method used for the semantic uncertainty test.
     """
 
     if sample_count < 2:
@@ -72,27 +68,43 @@ def generate_multiple_answers(
     return samples
 
 
-if __name__ == "__main__":
-    from rag import retrieve_chunks
+def generate_temperature_sweep_answers(
+    question: str,
+    chunks: list[dict[str, Any]],
+    temperatures: list[float] | None = None
+) -> list[dict[str, Any]]:
+    """
+    Generate one answer at each temperature.
 
-    question = input(
-        "\nAsk a question for semantic consistency testing: "
-    )
+    This measures sensitivity to the temperature setting. It is not used
+    for the semantic entropy calculation.
+    """
 
-    chunks = retrieve_chunks(question)
-
-    samples = generate_multiple_answers(
-        question=question,
-        chunks=chunks,
-        sample_count=5,
-        temperature=0.7
-    )
-
-    for sample in samples:
-        print("\n" + "=" * 80)
-        print(
-            f"Sample {sample['sample_id']} "
-            f"(temperature={sample['temperature']})"
+    if temperatures is None:
+        temperatures = (
+            DEFAULT_TEMPERATURE_SWEEP
         )
-        print("=" * 80)
-        print(sample["answer"])
+
+    prompt = build_prompt(
+        question,
+        chunks
+    )
+
+    samples = []
+
+    for index, temperature in enumerate(
+        temperatures
+    ):
+        answer = ask_llm(
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=900
+        )
+
+        samples.append({
+            "sample_id": index + 1,
+            "temperature": temperature,
+            "answer": answer
+        })
+
+    return samples

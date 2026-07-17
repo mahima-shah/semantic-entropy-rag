@@ -254,3 +254,97 @@ Use exactly this structure:
         })
 
     return result
+
+def judge_temperature_sensitivity(
+    question: str,
+    samples: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """
+    Compare answers generated at different temperatures.
+
+    This does not calculate semantic entropy. It reports whether changing
+    the temperature changes the legal conclusion or factual claims.
+    """
+
+    formatted_samples = format_samples(
+        samples
+    )
+
+    prompt = f"""
+You are evaluating how sensitive a legal RAG answer is to temperature.
+
+Original question:
+{question}
+
+Answers generated at different temperatures:
+{formatted_samples}
+
+Each sample was generated from the same question and retrieved context,
+but with a different temperature.
+
+Your tasks:
+
+1. Determine whether the legal conclusion remains stable across temperatures.
+2. Ignore harmless differences in wording, tone, length, and formatting.
+3. Identify any temperature where the answer introduces:
+   - a different legal conclusion
+   - stronger or weaker certainty
+   - unsupported factual claims
+   - new statutes, cases, dates, duties, or exceptions
+   - new assumptions not present at lower temperatures
+4. Do not decide which answer is legally correct.
+5. Only report how the answers change as temperature changes.
+
+Return valid JSON only in this structure:
+
+{{
+  "stable_across_temperatures": true,
+  "sensitivity_level": "Low",
+  "changes": [
+    {{
+      "temperature": 0.9,
+      "type": "stronger_claim",
+      "description": "The answer changes from a discretionary right to mandatory termination."
+    }}
+  ],
+  "highest_risk_temperature": null,
+  "summary": "The legal conclusion remains stable across all temperatures."
+}}
+"""
+
+    raw_response = ask_llm(
+        prompt=prompt,
+        temperature=0.0,
+        max_tokens=1000
+    )
+
+    result = extract_json(
+        raw_response
+    )
+
+    result.setdefault(
+        "stable_across_temperatures",
+        True
+    )
+
+    result.setdefault(
+        "sensitivity_level",
+        "Low"
+    )
+
+    result.setdefault(
+        "changes",
+        []
+    )
+
+    result.setdefault(
+        "highest_risk_temperature",
+        None
+    )
+
+    result.setdefault(
+        "summary",
+        "No temperature sensitivity summary was returned."
+    )
+
+    return result

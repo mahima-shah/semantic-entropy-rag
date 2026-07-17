@@ -3,16 +3,22 @@ app.py
 
 Streamlit interface for the RAG Reliability Checker.
 
-The app:
+The app runs two separate reliability tests:
 
-1. Retrieves relevant legal-document chunks
-2. Generates multiple answers at one fixed temperature
-3. Groups answers by semantic meaning
-4. Calculates normalized semantic entropy
-5. Audits material contradictions
-6. Routes to consensus finalization or recovery
-7. Displays sources and debug details
-8. Logs evaluation results to CSV
+1. Semantic uncertainty test
+   Generates multiple answers at one fixed temperature and checks whether
+   they agree in meaning.
+
+2. Temperature sensitivity test
+   Generates answers at different temperatures and checks whether changing
+   the temperature changes the legal conclusion.
+
+The app also:
+- retrieves document evidence
+- generates a final answer
+- applies recovery when semantic contradictions are detected
+- displays sources and debug details
+- logs each run to a CSV file
 """
 
 import csv
@@ -22,9 +28,7 @@ from typing import Any
 
 import streamlit as st
 
-from pipeline import (
-    run_reliability_pipeline
-)
+from pipeline import run_reliability_pipeline
 
 
 # -----------------------------
@@ -42,14 +46,11 @@ st.set_page_config(
 # Helper Functions
 # -----------------------------
 
-def display_risk_badge(
+def display_semantic_risk_badge(
     risk_label: str
 ) -> None:
     """
-    Display semantic uncertainty.
-
-    This is not labelled factual confidence because stable answers
-    may still be consistently incorrect.
+    Display the result of the fixed-temperature semantic uncertainty test.
     """
 
     if risk_label == "Low":
@@ -65,6 +66,29 @@ def display_risk_badge(
     else:
         st.error(
             "Semantic uncertainty: High"
+        )
+
+
+def display_temperature_badge(
+    sensitivity_level: str
+) -> None:
+    """
+    Display the result of the temperature sensitivity test.
+    """
+
+    if sensitivity_level == "Low":
+        st.success(
+            "Temperature sensitivity: Low"
+        )
+
+    elif sensitivity_level == "Medium":
+        st.warning(
+            "Temperature sensitivity: Medium"
+        )
+
+    else:
+        st.error(
+            "Temperature sensitivity: High"
         )
 
 
@@ -89,7 +113,7 @@ def save_result(
     category: str
 ) -> None:
     """
-    Append one evaluation run to the CSV log.
+    Append one evaluation run to results/evaluation_results.csv.
     """
 
     os.makedirs(
@@ -103,6 +127,19 @@ def save_result(
 
     file_exists = os.path.exists(
         filename
+    )
+
+    semantic_result = result[
+        "semantic_test"
+    ]
+
+    temperature_result = result[
+        "temperature_test"
+    ]
+
+    temperature_audit = (
+        temperature_result.get("audit")
+        or {}
     )
 
     with open(
@@ -120,13 +157,17 @@ def save_result(
                 "Category",
                 "Semantic Uncertainty",
                 "Normalized Entropy",
-                "Risk Reason",
+                "Semantic Risk Reason",
                 "Recovery Used",
-                "Sample Count",
-                "Sample Temperature",
-                "Cluster Count",
+                "Semantic Sample Count",
+                "Semantic Sample Temperature",
+                "Semantic Cluster Count",
                 "Material Contradiction",
-                "Answer",
+                "Temperature Test Enabled",
+                "Temperature Sensitivity",
+                "Stable Across Temperatures",
+                "Highest Risk Temperature",
+                "Final Answer",
                 "Source Count",
                 "Sources"
             ])
@@ -137,34 +178,65 @@ def save_result(
             ),
             result["question"],
             category,
-            result["risk"]["label"],
+            semantic_result[
+                "risk"
+            ]["label"],
             round(
-                result["entropy"][
-                    "normalized_entropy"
-                ],
+                semantic_result[
+                    "entropy"
+                ]["normalized_entropy"],
                 4
             ),
-            result["risk"]["reason"],
-            result["recovery_used"],
-            result["sample_count"],
+            semantic_result[
+                "risk"
+            ]["reason"],
             result[
+                "recovery_used"
+            ],
+            semantic_result[
+                "sample_count"
+            ],
+            semantic_result[
                 "sample_temperature"
             ],
             len(
-                result["audit"][
-                    "clusters"
-                ]
+                semantic_result[
+                    "audit"
+                ]["clusters"]
             ),
-            result["audit"][
-                "material_contradiction"
+            semantic_result[
+                "audit"
+            ]["material_contradiction"],
+            temperature_result[
+                "enabled"
             ],
-            result["answer"].replace(
+            temperature_audit.get(
+                "sensitivity_level",
+                ""
+            ),
+            temperature_audit.get(
+                "stable_across_temperatures",
+                ""
+            ),
+            temperature_audit.get(
+                "highest_risk_temperature",
+                ""
+            ),
+            result[
+                "answer"
+            ].replace(
                 "\n",
                 " "
             ),
-            len(result["sources"]),
+            len(
+                result[
+                    "sources"
+                ]
+            ),
             format_source_names(
-                result["sources"]
+                result[
+                    "sources"
+                ]
             )
         ])
 
@@ -178,9 +250,9 @@ st.title(
 )
 
 st.write(
-    "Ask a legal-document question. The app retrieves evidence, "
-    "samples multiple answers, checks whether they agree in meaning, "
-    "and uses a safer recovery path when contradictions appear."
+    "Ask a legal-document question. The app runs two reliability tests: "
+    "one checks whether repeated answers agree at the same temperature, "
+    "and the other checks whether the answer changes across temperatures."
 )
 
 question = st.text_input(
@@ -197,13 +269,27 @@ category = st.selectbox(
     ]
 )
 
+
+# -----------------------------
+# Test Settings
+# -----------------------------
+
 with st.expander(
     "Test settings"
 ):
+
+    st.write(
+        "**Semantic uncertainty test**"
+    )
+
     sample_count = st.selectbox(
-        "Number of samples",
+        "Number of fixed-temperature samples",
         [3, 5, 7],
-        index=1
+        index=1,
+        help=(
+            "The same question is generated multiple times "
+            "using the same evidence and temperature."
+        )
     )
 
     sample_temperature = st.slider(
@@ -213,16 +299,37 @@ with st.expander(
         value=0.7,
         step=0.1,
         help=(
-            "Every sample in one run uses the same temperature. "
-            "0.7 is a useful starting point."
+            "All semantic uncertainty samples use this same temperature."
         )
     )
+
+    st.divider()
+
+    st.write(
+        "**Temperature sensitivity test**"
+    )
+
+    run_temperature_test = st.checkbox(
+        "Also run temperature sensitivity test",
+        value=True,
+        help=(
+            "Generates one answer at several temperatures "
+            "to see whether the legal conclusion changes."
+        )
+    )
+
+    st.caption(
+        "Temperature sweep: 0.0, 0.3, 0.6 and 0.9"
+    )
+
+    st.divider()
 
     top_k = st.selectbox(
         "Number of retrieved chunks",
         [3, 4, 5, 6],
         index=1
     )
+
 
 run_button = st.button(
     "Run reliability check",
@@ -238,25 +345,38 @@ if (
     run_button
     and question.strip()
 ):
+
     try:
+
         with st.spinner(
-            "Retrieving evidence, sampling answers, "
-            "and auditing agreement..."
+            "Retrieving evidence, generating samples, "
+            "and running both reliability tests..."
         ):
-            result = (
-                run_reliability_pipeline(
-                    question=(
-                        question.strip()
-                    ),
-                    sample_count=(
-                        sample_count
-                    ),
-                    sample_temperature=(
-                        sample_temperature
-                    ),
-                    top_k=top_k
+
+            result = run_reliability_pipeline(
+                question=question.strip(),
+                sample_count=sample_count,
+                sample_temperature=sample_temperature,
+                temperature_sweep=[
+                    0.0,
+                    0.3,
+                    0.6,
+                    0.9
+                ],
+                top_k=top_k,
+                run_temperature_test=(
+                    run_temperature_test
                 )
             )
+
+        semantic_result = result[
+            "semantic_test"
+        ]
+
+        temperature_result = result[
+            "temperature_test"
+        ]
+
 
         # -------------------------------------
         # Final Answer
@@ -270,43 +390,53 @@ if (
             result["answer"]
         )
 
+
         # -------------------------------------
-        # Reliability Signal
+        # Test 1: Semantic Uncertainty
         # -------------------------------------
 
         st.subheader(
-            "Reliability Signal"
+            "1. Semantic Uncertainty Test"
         )
 
-        display_risk_badge(
-            result["risk"]["label"]
+        st.caption(
+            "This test generates multiple answers using the same "
+            "temperature, prompt and retrieved evidence."
         )
 
-        col_1, col_2, col_3 = (
+        display_semantic_risk_badge(
+            semantic_result[
+                "risk"
+            ]["label"]
+        )
+
+        semantic_col_1, semantic_col_2, semantic_col_3 = (
             st.columns(3)
         )
 
-        col_1.metric(
+        semantic_col_1.metric(
             "Normalized semantic entropy",
             (
-                f"{result['entropy']['normalized_entropy']:.3f}"
+                f"{semantic_result['entropy']['normalized_entropy']:.3f}"
             )
         )
 
-        col_2.metric(
+        semantic_col_2.metric(
             "Meaning clusters",
             len(
-                result["audit"][
-                    "clusters"
-                ]
+                semantic_result[
+                    "audit"
+                ]["clusters"]
             )
         )
 
-        col_3.metric(
+        semantic_col_3.metric(
             "Recovery used",
             (
                 "Yes"
-                if result["recovery_used"]
+                if result[
+                    "recovery_used"
+                ]
                 else "No"
             )
         )
@@ -316,7 +446,9 @@ if (
         )
 
         st.write(
-            result["risk"]["reason"]
+            semantic_result[
+                "risk"
+            ]["reason"]
         )
 
         st.caption(
@@ -324,6 +456,150 @@ if (
             "were stable in meaning. It does not prove that the "
             "answer is legally correct."
         )
+
+
+        # -------------------------------------
+        # Test 2: Temperature Sensitivity
+        # -------------------------------------
+
+        if temperature_result[
+            "enabled"
+        ]:
+
+            st.subheader(
+                "2. Temperature Sensitivity Test"
+            )
+
+            st.caption(
+                "This test generates one answer at each temperature "
+                "to see whether changing the model setting changes "
+                "the legal conclusion."
+            )
+
+            temperature_audit = (
+                temperature_result[
+                    "audit"
+                ]
+                or {}
+            )
+
+            sensitivity_level = (
+                temperature_audit.get(
+                    "sensitivity_level",
+                    "Unknown"
+                )
+            )
+
+            display_temperature_badge(
+                sensitivity_level
+            )
+
+            temperature_col_1, temperature_col_2 = (
+                st.columns(2)
+            )
+
+            stable_across_temperatures = (
+                temperature_audit.get(
+                    "stable_across_temperatures",
+                    False
+                )
+            )
+
+            temperature_col_1.metric(
+                "Stable conclusion",
+                (
+                    "Yes"
+                    if stable_across_temperatures
+                    else "No"
+                )
+            )
+
+            highest_risk_temperature = (
+                temperature_audit.get(
+                    "highest_risk_temperature"
+                )
+            )
+
+            temperature_col_2.metric(
+                "Highest-risk temperature",
+                (
+                    str(
+                        highest_risk_temperature
+                    )
+                    if highest_risk_temperature
+                    is not None
+                    else "None"
+                )
+            )
+
+            st.write(
+                "**Temperature test summary:**"
+            )
+
+            st.write(
+                temperature_audit.get(
+                    "summary",
+                    "No temperature sensitivity summary was returned."
+                )
+            )
+
+            temperature_changes = (
+                temperature_audit.get(
+                    "changes",
+                    []
+                )
+            )
+
+            if temperature_changes:
+
+                st.write(
+                    "**Changes detected:**"
+                )
+
+                for change in temperature_changes:
+
+                    with st.container(
+                        border=True
+                    ):
+
+                        change_temperature = (
+                            change.get(
+                                "temperature",
+                                "Unknown"
+                            )
+                        )
+
+                        change_type = (
+                            change.get(
+                                "type",
+                                "change"
+                            )
+                            .replace(
+                                "_",
+                                " "
+                            )
+                            .title()
+                        )
+
+                        st.write(
+                            f"**Temperature "
+                            f"{change_temperature}: "
+                            f"{change_type}**"
+                        )
+
+                        st.write(
+                            change.get(
+                                "description",
+                                "No description provided."
+                            )
+                        )
+
+            else:
+
+                st.info(
+                    "No material changes were detected across temperatures."
+                )
+
 
         # -------------------------------------
         # Sources
@@ -334,11 +610,15 @@ if (
         )
 
         for index, source in enumerate(
-            result["sources"]
+            result[
+                "sources"
+            ]
         ):
+
             with st.container(
                 border=True
             ):
+
                 st.write(
                     f"**Source {index + 1}:** "
                     f"{source['source']} | "
@@ -347,16 +627,27 @@ if (
                 )
 
                 snippet = (
-                    source["text"][:700]
-                    .replace("\n", " ")
+                    source[
+                        "text"
+                    ][:700]
+                    .replace(
+                        "\n",
+                        " "
+                    )
                 )
 
                 if len(
-                    source["text"]
+                    source[
+                        "text"
+                    ]
                 ) > 700:
+
                     snippet += "..."
 
-                st.write(snippet)
+                st.write(
+                    snippet
+                )
+
 
         # -------------------------------------
         # Save Result
@@ -372,6 +663,7 @@ if (
             "results/evaluation_results.csv"
         )
 
+
         # -------------------------------------
         # Debug Details
         # -------------------------------------
@@ -380,12 +672,17 @@ if (
             "Debug Details"
         )
 
+
+        # Fixed-temperature samples
+
         with st.expander(
-            "Sampled Answers"
+            "Semantic Uncertainty Samples"
         ):
-            for sample in result[
+
+            for sample in semantic_result[
                 "samples"
             ]:
+
                 st.write(
                     f"### Sample "
                     f"{sample['sample_id']} "
@@ -394,15 +691,22 @@ if (
                 )
 
                 st.write(
-                    sample["answer"]
+                    sample[
+                        "answer"
+                    ]
                 )
+
+
+        # Semantic clusters
 
         with st.expander(
             "Semantic Clusters"
         ):
-            for cluster in result[
+
+            for cluster in semantic_result[
                 "audit"
             ]["clusters"]:
+
                 st.write(
                     f"**Cluster "
                     f"{cluster.get('cluster_id')}:** "
@@ -419,32 +723,89 @@ if (
                 st.write(
                     "Samples: "
                     + ", ".join(
-                        str(sample_id)
+                        str(
+                            sample_id
+                        )
                         for sample_id
                         in sample_ids
                     )
                 )
 
+
+        # Contradiction audit
+
         with st.expander(
             "Contradiction Audit"
         ):
+
             st.json(
-                result["audit"]
+                semantic_result[
+                    "audit"
+                ]
             )
+
+
+        # Entropy calculation
 
         with st.expander(
             "Entropy Calculation"
         ):
+
             st.json(
-                result["entropy"]
+                semantic_result[
+                    "entropy"
+                ]
             )
+
+
+        # Temperature samples and audit
+
+        if temperature_result[
+            "enabled"
+        ]:
+
+            with st.expander(
+                "Temperature Sweep Samples"
+            ):
+
+                for sample in temperature_result[
+                    "samples"
+                ]:
+
+                    st.write(
+                        f"### Temperature "
+                        f"{sample['temperature']}"
+                    )
+
+                    st.write(
+                        sample[
+                            "answer"
+                        ]
+                    )
+
+            with st.expander(
+                "Temperature Sensitivity Audit"
+            ):
+
+                st.json(
+                    temperature_result[
+                        "audit"
+                    ]
+                )
+
+
+        # Retrieved chunks
 
         with st.expander(
             "Retrieved Chunks"
         ):
+
             for index, chunk in enumerate(
-                result["sources"]
+                result[
+                    "sources"
+                ]
             ):
+
                 st.write(
                     f"### Chunk "
                     f"{index + 1}"
@@ -461,16 +822,21 @@ if (
                 )
 
                 st.write(
-                    chunk["text"]
+                    chunk[
+                        "text"
+                    ]
                 )
 
+
     except Exception as error:
+
         st.error(
             f"Run failed: {error}"
         )
 
 
 elif run_button:
+
     st.warning(
         "Please enter a question first."
     )
